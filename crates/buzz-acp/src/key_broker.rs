@@ -65,6 +65,20 @@ pub(crate) fn fetch(account: &str) -> Result<Zeroizing<String>, ConfigError> {
     )))
 }
 
+/// Git runs the credential and signing helpers as short-lived children of the
+/// agent. In broker mode they get the key here, for their own process only.
+/// A failure is reported, and the helper then fails with its own missing-key error.
+pub(crate) fn prime_git_helper() {
+    let Ok(account) = std::env::var(ACCOUNT_ENV) else {
+        return;
+    };
+    match fetch(&account) {
+        // Called from the helper entry point, before any thread starts.
+        Ok(key) => std::env::set_var("NOSTR_PRIVATE_KEY", key.as_str()),
+        Err(error) => eprintln!("buzz-acp git helper: {error}"),
+    }
+}
+
 fn parse_reply(line: &str) -> Result<Zeroizing<String>, ConfigError> {
     let line = line.trim();
     let Some(encoded) = line.strip_prefix("OK ") else {
