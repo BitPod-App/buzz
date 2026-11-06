@@ -12,8 +12,17 @@ pub(crate) struct GitEnvironment {
 
 impl GitEnvironment {
     pub(crate) fn for_config(config: &mut crate::config::Config) -> anyhow::Result<Self> {
-        let environment =
+        let mut environment =
             Self::install(&config.keys, &config.relay_url, &std::env::current_exe()?)?;
+        // Broker mode keeps the key out of every child's environment.
+        if let Some(account) = &config.key_broker_account {
+            environment
+                .env
+                .retain(|(name, _)| name != "BUZZ_PRIVATE_KEY");
+            environment
+                .env
+                .push((crate::key_broker::ACCOUNT_ENV.into(), account.clone()));
+        }
         config
             .persona_env_vars
             .retain(|(name, _)| !is_managed_env(name));
@@ -387,6 +396,7 @@ pub(crate) fn is_managed_env(name: &str) -> bool {
             "PATH"
                 | "GIT_TERMINAL_PROMPT"
                 | "BUZZ_PRIVATE_KEY"
+                | crate::key_broker::ACCOUNT_ENV
                 | "BUZZ_RELAY_URL"
                 | GIT_IDENTITY_ENV
         )
