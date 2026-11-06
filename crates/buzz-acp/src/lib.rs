@@ -2722,8 +2722,14 @@ pub fn run() -> Result<()> {
         .file_stem()
         .and_then(|name| name.to_str())
     {
-        Some("git-credential-nostr") => std::process::exit(git_credential_nostr::run()),
-        Some("git-sign-nostr") => std::process::exit(git_sign_nostr::run()),
+        Some("git-credential-nostr") => {
+            key_broker::prime_git_helper();
+            std::process::exit(git_credential_nostr::run())
+        }
+        Some("git-sign-nostr") => {
+            key_broker::prime_git_helper();
+            std::process::exit(git_sign_nostr::run())
+        }
         _ => {}
     }
     config::propagate_legacy_env_vars();
