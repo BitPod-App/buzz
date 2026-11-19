@@ -8,7 +8,9 @@
 //!
 //! Protocol: send `GET <account>\n`, receive `OK <base64>\n` or `ERR <reason>\n`.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
@@ -21,6 +23,7 @@ use crate::config::ConfigError;
 
 pub(crate) const ACCOUNT_ENV: &str = "BUZZ_KEY_BROKER_ACCOUNT";
 const SOCKET_ENV: &str = "BUZZ_KEY_BROKER_SOCKET";
+#[cfg(unix)]
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const ATTEMPTS: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -34,6 +37,7 @@ fn socket_path() -> Result<PathBuf, ConfigError> {
     Ok(Path::new(&home).join(".buzz/broker.sock"))
 }
 
+#[cfg(unix)]
 fn request(socket: &Path, account: &str) -> std::io::Result<Zeroizing<String>> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -42,6 +46,15 @@ fn request(socket: &Path, account: &str) -> std::io::Result<Zeroizing<String>> {
     let mut line = Zeroizing::new(String::new());
     BufReader::new(stream).read_line(&mut line)?;
     Ok(line)
+}
+
+/// The broker is an owner-only UNIX socket; other platforms have no broker mode.
+#[cfg(not(unix))]
+fn request(_socket: &Path, _account: &str) -> std::io::Result<Zeroizing<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "the key broker needs a UNIX socket",
+    ))
 }
 
 /// Read one account's key. The broker can start after this process at boot,
@@ -96,7 +109,7 @@ fn parse_reply(line: &str) -> Result<Zeroizing<String>, ConfigError> {
     Ok(Zeroizing::new(key.to_owned()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
