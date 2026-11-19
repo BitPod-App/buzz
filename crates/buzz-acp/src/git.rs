@@ -37,6 +37,8 @@ impl GitEnvironment {
         Ok(environment)
     }
 
+    /// Test seam: production goes through `for_config`, which decides `persist_key`.
+    #[cfg(test)]
     pub(crate) fn install(
         keys: &nostr::Keys,
         relay_url: &str,
