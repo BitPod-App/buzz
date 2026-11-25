@@ -307,3 +307,32 @@ async fn other_channel_kinds_keep_plain_edits_on_older_relays() {
         }
     }
 }
+
+#[test]
+fn hero_rewrite_preserves_prose_and_can_restore_original_url() {
+    fn media(url: &str) -> Vec<Vec<String>> {
+        vec![vec![
+            "imeta".into(),
+            format!("url {url}"),
+            "m image/jpeg".into(),
+        ]]
+    }
+    let original = "# Headline\n\n![Alt](https://relay.test/media/old.jpg)\n\nOriginal prose.";
+    let (before, after) =
+        super::hero_inline(original, &media("https://relay.test/media/old.jpg")).unwrap();
+    let edited = format!("{before}https://relay.test/media/new.jpg{after}");
+    assert_eq!(edited, original.replace("/old.jpg", "/new.jpg"));
+    let (before, after) =
+        super::hero_inline(&edited, &media("https://relay.test/media/new.jpg")).unwrap();
+    assert_eq!(
+        format!("{before}https://relay.test/media/old.jpg{after}"),
+        original
+    );
+    assert!(
+        super::hero_inline(
+            &format!("{original}\n{original}"),
+            &media("https://relay.test/media/old.jpg")
+        )
+        .is_err()
+    );
+}

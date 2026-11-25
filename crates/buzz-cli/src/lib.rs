@@ -698,8 +698,22 @@ pub enum MessagesCmd {
         #[arg(long)]
         event: String,
         /// New message content
-        #[arg(long)]
-        content: String,
+        #[arg(
+            long,
+            required_unless_present = "replace_hero",
+            conflicts_with = "replace_hero"
+        )]
+        content: Option<String>,
+        /// Replace the first image and its matching inline image using a relay upload.
+        #[arg(
+            long,
+            requires = "expected_effective",
+            conflicts_with = "clear_attachments"
+        )]
+        replace_hero: Option<String>,
+        /// ID of the original or latest effective edit, as last read.
+        #[arg(long, requires = "replace_hero")]
+        expected_effective: Option<String>,
         /// Remove all attachments on kinds 9/40002/40008/45001/45003 (later edits keep them removed)
         #[arg(long)]
         clear_attachments: bool,

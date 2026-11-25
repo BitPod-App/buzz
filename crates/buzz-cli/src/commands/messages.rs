@@ -1044,7 +1044,18 @@ pub async fn dispatch(
             event,
             content,
             clear_attachments,
-        } => edit::edit_message(client, &event, &content, clear_attachments).await,
+            replace_hero,
+            expected_effective,
+        } => {
+            edit::edit_message_with_hero(
+                client,
+                &event,
+                content.as_deref().unwrap_or(""),
+                clear_attachments,
+                replace_hero.as_deref().zip(expected_effective.as_deref()),
+            )
+            .await
+        }
         MessagesCmd::Delete {
             event,
             action_id,

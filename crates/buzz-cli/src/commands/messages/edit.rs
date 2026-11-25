@@ -7,11 +7,22 @@ use crate::{
 };
 use nostr::{Event, Timestamp};
 
-pub(super) async fn edit_message(
+#[cfg(test)]
+async fn edit_message(
     client: &BuzzClient,
     event_id: &str,
     content: &str,
     clear_attachments: bool,
+) -> Result<(), CliError> {
+    edit_message_with_hero(client, event_id, content, clear_attachments, None).await
+}
+
+pub(super) async fn edit_message_with_hero(
+    client: &BuzzClient,
+    event_id: &str,
+    content: &str,
+    clear_attachments: bool,
+    hero: Option<(&str, &str)>,
 ) -> Result<(), CliError> {
     validate_hex64(event_id)?;
     validate_content_size(content)?;
@@ -25,10 +36,15 @@ pub(super) async fn edit_message(
             "relay returned the wrong edit target".into(),
         ));
     }
+    if hero.is_some() && original.pubkey != client.public_key() {
+        return Err(CliError::Usage(
+            "Only the original author can replace the hero".into(),
+        ));
+    }
     // Keep this boundary aligned with media_reference_query and the relay lookup.
     // Other channel-tagged events retain the historical plain-edit behavior.
     if !buzz_core::media::EDIT_GOVERNED_KINDS.contains(&original.kind.as_u16()) {
-        if clear_attachments {
+        if clear_attachments || hero.is_some() {
             return Err(CliError::Usage(format!(
                 "attachments on kind {} are not edit-governed",
                 original.kind.as_u16()
@@ -69,8 +85,10 @@ pub(super) async fn edit_message(
     let edits: Vec<Event> = if snapshot["edit"].is_null() {
         vec![]
     } else {
-        vec![serde_json::from_value(snapshot["edit"].clone())
-            .map_err(|e| CliError::Other(format!("invalid effective edit: {e}")))?]
+        vec![
+            serde_json::from_value(snapshot["edit"].clone())
+                .map_err(|e| CliError::Other(format!("invalid effective edit: {e}")))?,
+        ]
     };
     let effective = latest_edit(&original, &edits);
     if !edits.is_empty() && effective.id == original.id {
@@ -78,7 +96,7 @@ pub(super) async fn edit_message(
             "effective edit response has the wrong replacement".into(),
         ));
     }
-    let media = if clear_attachments {
+    let mut media: Vec<Vec<String>> = if clear_attachments {
         Vec::new()
     } else {
         effective
@@ -89,6 +107,33 @@ pub(super) async fn edit_message(
             .collect()
     };
     let now = Timestamp::now().as_secs();
+    let replacement;
+    let content = if let Some((path, expected)) = hero {
+        validate_hex64(expected)?;
+        if effective.id != parse_event_id(expected)? || effective.pubkey != original.pubkey {
+            return Err(CliError::Usage(
+                "Effective article changed; read it again before editing".into(),
+            ));
+        }
+        let (before, after) = hero_inline(&effective.content, &media)?;
+        let desc = client.upload_file(path).await?;
+        if !desc.mime_type.starts_with("image/") {
+            return Err(CliError::Usage("The replacement must be an image".into()));
+        }
+        replacement = format!("{before}{}{after}", desc.url);
+        validate_content_size(&replacement)?;
+        let mut tag = crate::client::build_imeta_tag(&desc);
+        tag.extend(
+            media[0]
+                .iter()
+                .filter(|part| part.starts_with("alt "))
+                .cloned(),
+        );
+        media[0] = tag;
+        replacement.as_str()
+    } else {
+        content
+    };
     // Make successive edits effective even when issued in the same second.
     // Refuse an unexpectedly future timeline instead of extending it forever.
     let head = effective.created_at.as_secs();
@@ -105,6 +150,46 @@ pub(super) async fn edit_message(
     let resp = client.submit_event(event).await?;
     println!("{}", crate::client::normalize_write_response(&resp));
     Ok(())
+}
+
+/// Only rewrite an unambiguous image at the start of a Markdown line.
+fn hero_inline<'a>(
+    content: &'a str,
+    media: &[Vec<String>],
+) -> Result<(&'a str, &'a str), CliError> {
+    let invalid =
+        || CliError::Usage("The first attachment needs exactly one matching inline image".into());
+    let first = media.first().ok_or_else(invalid)?;
+    if !first.iter().any(|part| part.starts_with("m image/")) {
+        return Err(invalid());
+    }
+    let url = first
+        .iter()
+        .find_map(|part| part.strip_prefix("url "))
+        .ok_or_else(invalid)?;
+    let bare = format!("]({url})");
+    let angle = format!("](<{url}>)");
+    let mut matches = content
+        .match_indices(&bare)
+        .map(|(i, _)| (i, 2))
+        .chain(content.match_indices(&angle).map(|(i, _)| (i, 3)))
+        .filter(|(i, _)| {
+            let line = content[..*i].rsplit('\n').next().unwrap_or_default();
+            line.rfind("![").is_some_and(|start| {
+                let prefix = &line[..start];
+                !prefix.ends_with('\\')
+                    && prefix.trim().is_empty()
+                    && !line[start + 2..].contains(']')
+            })
+        });
+    let (index, prefix) = matches.next().ok_or_else(invalid)?;
+    if matches.next().is_some() {
+        return Err(invalid());
+    }
+    Ok((
+        &content[..index + prefix],
+        &content[index + prefix + url.len()..],
+    ))
 }
 
 fn latest_edit<'a>(original: &'a Event, edits: &'a [Event]) -> &'a Event {
