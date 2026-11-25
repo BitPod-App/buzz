@@ -17,12 +17,17 @@ async fn edit_message(
     edit_message_with_hero(client, event_id, content, clear_attachments, None).await
 }
 
+pub(super) enum HeroSource<'a> {
+    Upload(&'a str),
+    Revision(&'a str),
+}
+
 pub(super) async fn edit_message_with_hero(
     client: &BuzzClient,
     event_id: &str,
     content: &str,
     clear_attachments: bool,
-    hero: Option<(&str, &str)>,
+    hero: Option<(HeroSource<'_>, &str)>,
 ) -> Result<(), CliError> {
     validate_hex64(event_id)?;
     validate_content_size(content)?;
@@ -108,7 +113,7 @@ pub(super) async fn edit_message_with_hero(
     };
     let now = Timestamp::now().as_secs();
     let replacement;
-    let content = if let Some((path, expected)) = hero {
+    let content = if let Some((source, expected)) = hero {
         validate_hex64(expected)?;
         if effective.id != parse_event_id(expected)? || effective.pubkey != original.pubkey {
             return Err(CliError::Usage(
@@ -116,19 +121,63 @@ pub(super) async fn edit_message_with_hero(
             ));
         }
         let (before, after) = hero_inline(&effective.content, &media)?;
-        let desc = client.upload_file(path).await?;
-        if !desc.mime_type.starts_with("image/") {
-            return Err(CliError::Usage("The replacement must be an image".into()));
-        }
-        replacement = format!("{before}{}{after}", desc.url);
+        let tag = match source {
+            HeroSource::Upload(path) => {
+                let desc = client.upload_file(path).await?;
+                if !matches!(
+                    desc.mime_type.as_str(),
+                    "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+                ) {
+                    return Err(CliError::Usage(
+                        "The replacement must be an inline image".into(),
+                    ));
+                }
+                let mut tag = crate::client::build_imeta_tag(&desc);
+                tag.extend(
+                    media[0]
+                        .iter()
+                        .filter(|part| part.starts_with("alt "))
+                        .cloned(),
+                );
+                tag
+            }
+            HeroSource::Revision(revision) => {
+                validate_hex64(revision)?;
+                let revision = parse_event_id(revision)?;
+                let historical = if revision == original.id {
+                    original.clone()
+                } else {
+                    let raw = fetch_event(client, &revision.to_hex()).await?;
+                    serde_json::from_value::<Event>(raw)
+                        .map_err(|e| CliError::Other(format!("invalid rollback revision: {e}")))?
+                };
+                if historical.id != revision
+                    || historical.pubkey != original.pubkey
+                    || historical.verify().is_err()
+                    || historical.id == effective.id
+                    || (historical.id != original.id
+                        && latest_edit(&original, std::slice::from_ref(&historical)).id != revision)
+                    || (historical.created_at, historical.id)
+                        >= (effective.created_at, effective.id)
+                {
+                    return Err(CliError::Usage(
+                        "Rollback revision must be an earlier signed revision of this article"
+                            .into(),
+                    ));
+                }
+                let first = historical
+                    .tags
+                    .iter()
+                    .find(|tag| tag.as_slice().first().is_some_and(|k| k == "imeta"))
+                    .ok_or_else(|| {
+                        CliError::Usage("Rollback revision has no hero attachment".into())
+                    })?;
+                first.as_slice().to_vec()
+            }
+        };
+        let url = hero_url(&tag)?;
+        replacement = format!("{before}{url}{after}");
         validate_content_size(&replacement)?;
-        let mut tag = crate::client::build_imeta_tag(&desc);
-        tag.extend(
-            media[0]
-                .iter()
-                .filter(|part| part.starts_with("alt "))
-                .cloned(),
-        );
         media[0] = tag;
         replacement.as_str()
     } else {
@@ -160,13 +209,7 @@ fn hero_inline<'a>(
     let invalid =
         || CliError::Usage("The first attachment needs exactly one matching inline image".into());
     let first = media.first().ok_or_else(invalid)?;
-    if !first.iter().any(|part| part.starts_with("m image/")) {
-        return Err(invalid());
-    }
-    let url = first
-        .iter()
-        .find_map(|part| part.strip_prefix("url "))
-        .ok_or_else(invalid)?;
+    let url = hero_url(first)?;
     let bare = format!("]({url})");
     let angle = format!("](<{url}>)");
     let mut matches = content
@@ -190,6 +233,17 @@ fn hero_inline<'a>(
         &content[..index + prefix],
         &content[index + prefix + url.len()..],
     ))
+}
+
+fn hero_url(tag: &[String]) -> Result<&str, CliError> {
+    let invalid = || CliError::Usage("The hero tag must describe an image with a URL".into());
+    if !tag.iter().any(|part| part.starts_with("m image/")) {
+        return Err(invalid());
+    }
+    tag.iter()
+        .find_map(|part| part.strip_prefix("url "))
+        .filter(|url| !url.is_empty())
+        .ok_or_else(invalid)
 }
 
 fn latest_edit<'a>(original: &'a Event, edits: &'a [Event]) -> &'a Event {

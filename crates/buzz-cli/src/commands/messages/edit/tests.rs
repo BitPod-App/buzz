@@ -336,3 +336,43 @@ fn hero_rewrite_preserves_prose_and_can_restore_original_url() {
         .is_err()
     );
 }
+
+#[tokio::test]
+async fn rollback_restores_exact_tag_without_reverting_prose() {
+    let keys = Keys::generate();
+    let channel = Uuid::new_v4();
+    let original = message(&keys, channel, &[imeta("old")]);
+    let current = buzz_sdk::build_edit_with_media(
+        channel,
+        original.id,
+        "# Title\n![Alt](<https://example.com/new>)\nFresh prose.",
+        &[imeta("new"), imeta("other")],
+    )
+    .unwrap()
+    .sign_with_keys(&keys)
+    .unwrap();
+    let (url, state) = relay(vec![original.clone(), current.clone()], false).await;
+    let cli = client(url, keys);
+    let target = original.id.to_hex();
+    let head = current.id.to_hex();
+
+    assert!(
+        edit_message_with_hero(&cli, &target, "", false, Some((HeroSource::Revision(&target), &target)))
+            .await
+            .is_err()
+    );
+    assert!(state.submitted.lock().unwrap().is_empty());
+    edit_message_with_hero(&cli, &target, "", false, Some((HeroSource::Revision(&target), &head)))
+        .await
+        .unwrap();
+
+    let submitted = state.submitted.lock().unwrap();
+    assert_eq!(submitted.len(), 1);
+    let rollback = &submitted[0];
+    assert_eq!(rollback.content, "# Title\n![Alt](<https://example.com/old>)\nFresh prose.");
+    assert_eq!(latest_edit(&original, &submitted).id, rollback.id);
+    let attachments: Vec<_> = rollback.tags.iter()
+        .filter(|t| t.as_slice()[0] == "imeta")
+        .map(|t| t.as_slice().to_vec()).collect();
+    assert_eq!(attachments, vec![imeta("old"), imeta("other")]);
+}

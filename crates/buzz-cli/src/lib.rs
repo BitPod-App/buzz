@@ -700,19 +700,23 @@ pub enum MessagesCmd {
         /// New message content
         #[arg(
             long,
-            required_unless_present = "replace_hero",
-            conflicts_with = "replace_hero"
+            required_unless_present_any = ["replace_hero", "restore_hero_from"],
+            conflicts_with_all = ["replace_hero", "restore_hero_from"]
         )]
         content: Option<String>,
         /// Replace the first image and its matching inline image using a relay upload.
         #[arg(
             long,
             requires = "expected_effective",
+            group = "hero_operation",
             conflicts_with = "clear_attachments"
         )]
         replace_hero: Option<String>,
+        /// Restore the exact hero tag and URL from a prior revision of this message.
+        #[arg(long, group = "hero_operation", requires = "expected_effective", conflicts_with_all = ["clear_attachments", "replace_hero"])]
+        restore_hero_from: Option<String>,
         /// ID of the original or latest effective edit, as last read.
-        #[arg(long, requires = "replace_hero")]
+        #[arg(long, requires = "hero_operation")]
         expected_effective: Option<String>,
         /// Remove all attachments on kinds 9/40002/40008/45001/45003 (later edits keep them removed)
         #[arg(long)]

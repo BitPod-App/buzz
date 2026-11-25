@@ -1045,6 +1045,7 @@ pub async fn dispatch(
             content,
             clear_attachments,
             replace_hero,
+            restore_hero_from,
             expected_effective,
         } => {
             edit::edit_message_with_hero(
@@ -1052,7 +1053,9 @@ pub async fn dispatch(
                 &event,
                 content.as_deref().unwrap_or(""),
                 clear_attachments,
-                replace_hero.as_deref().zip(expected_effective.as_deref()),
+                replace_hero.as_deref().map(edit::HeroSource::Upload)
+                .or_else(|| restore_hero_from.as_deref().map(edit::HeroSource::Revision))
+                .zip(expected_effective.as_deref()),
             )
             .await
         }
