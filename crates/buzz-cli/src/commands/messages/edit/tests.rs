@@ -317,24 +317,18 @@ fn hero_rewrite_preserves_prose_and_can_restore_original_url() {
             "m image/jpeg".into(),
         ]]
     }
-    let original = "# Headline\n\n![Alt](https://relay.test/media/old.jpg)\n\nOriginal prose.";
-    let (before, after) =
-        super::hero_inline(original, &media("https://relay.test/media/old.jpg")).unwrap();
-    let edited = format!("{before}https://relay.test/media/new.jpg{after}");
-    assert_eq!(edited, original.replace("/old.jpg", "/new.jpg"));
-    let (before, after) =
-        super::hero_inline(&edited, &media("https://relay.test/media/new.jpg")).unwrap();
-    assert_eq!(
-        format!("{before}https://relay.test/media/old.jpg{after}"),
-        original
-    );
-    assert!(
-        super::hero_inline(
-            &format!("{original}\n{original}"),
-            &media("https://relay.test/media/old.jpg")
-        )
-        .is_err()
-    );
+    let old = "https://relay.test/media/old.jpg";
+    let new = "https://relay.test/media/new.jpg";
+    let original = format!("# Headline\n![First](<{old}>)\n[Prose link]({old})\n![Second]({old})");
+    let rewrite = |mut body: String, from, to| {
+        for range in super::hero_inline(&body, &media(from)).unwrap().into_iter().rev() {
+            body.replace_range(range, to);
+        }
+        body
+    };
+    let edited = rewrite(original.clone(), old, new);
+    assert_eq!(edited, format!("# Headline\n![First](<{new}>)\n[Prose link]({old})\n![Second]({new})"));
+    assert_eq!(rewrite(edited, new, old), original);
 }
 
 #[tokio::test]

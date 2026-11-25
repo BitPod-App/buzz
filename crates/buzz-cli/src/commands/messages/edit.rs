@@ -112,7 +112,7 @@ pub(super) async fn edit_message_with_hero(
             .collect()
     };
     let now = Timestamp::now().as_secs();
-    let replacement;
+    let mut replacement;
     let content = if let Some((source, expected)) = hero {
         validate_hex64(expected)?;
         if effective.id != parse_event_id(expected)? || effective.pubkey != original.pubkey {
@@ -120,7 +120,7 @@ pub(super) async fn edit_message_with_hero(
                 "Effective article changed; read it again before editing".into(),
             ));
         }
-        let (before, after) = hero_inline(&effective.content, &media)?;
+        let ranges = hero_inline(&effective.content, &media)?;
         let tag = match source {
             HeroSource::Upload(path) => {
                 let desc = client.upload_file(path).await?;
@@ -176,7 +176,10 @@ pub(super) async fn edit_message_with_hero(
             }
         };
         let url = hero_url(&tag)?;
-        replacement = format!("{before}{url}{after}");
+        replacement = effective.content.clone();
+        for range in ranges.into_iter().rev() {
+            replacement.replace_range(range, url);
+        }
         validate_content_size(&replacement)?;
         media[0] = tag;
         replacement.as_str()
@@ -201,18 +204,18 @@ pub(super) async fn edit_message_with_hero(
     Ok(())
 }
 
-/// Only rewrite an unambiguous image at the start of a Markdown line.
-fn hero_inline<'a>(
-    content: &'a str,
+/// Locate inline image destinations matching the first attachment exactly.
+fn hero_inline(
+    content: &str,
     media: &[Vec<String>],
-) -> Result<(&'a str, &'a str), CliError> {
+) -> Result<Vec<std::ops::Range<usize>>, CliError> {
     let invalid =
-        || CliError::Usage("The first attachment needs exactly one matching inline image".into());
+        || CliError::Usage("The first attachment needs at least one matching inline image".into());
     let first = media.first().ok_or_else(invalid)?;
     let url = hero_url(first)?;
     let bare = format!("]({url})");
     let angle = format!("](<{url}>)");
-    let mut matches = content
+    let mut matches: Vec<_> = content
         .match_indices(&bare)
         .map(|(i, _)| (i, 2))
         .chain(content.match_indices(&angle).map(|(i, _)| (i, 3)))
@@ -224,15 +227,17 @@ fn hero_inline<'a>(
                     && prefix.trim().is_empty()
                     && !line[start + 2..].contains(']')
             })
-        });
-    let (index, prefix) = matches.next().ok_or_else(invalid)?;
-    if matches.next().is_some() {
+        })
+        .map(|(index, prefix)| {
+            let start = index + prefix;
+            start..start + url.len()
+        })
+        .collect();
+    if matches.is_empty() {
         return Err(invalid());
     }
-    Ok((
-        &content[..index + prefix],
-        &content[index + prefix + url.len()..],
-    ))
+    matches.sort_unstable_by_key(|range| range.start);
+    Ok(matches)
 }
 
 fn hero_url(tag: &[String]) -> Result<&str, CliError> {
