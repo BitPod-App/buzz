@@ -7,11 +7,29 @@ use crate::{
 };
 use nostr::{Event, Timestamp};
 
-pub(super) async fn edit_message(
+#[cfg(test)]
+async fn edit_message(
     client: &BuzzClient,
     event_id: &str,
     content: &str,
     clear_attachments: bool,
+) -> Result<(), CliError> {
+    edit_message_with_hero(client, event_id, content, clear_attachments, None).await
+}
+
+pub(super) enum HeroSource<'a> {
+    /// Upload this file and make it the hero.
+    File(&'a str),
+    /// Put back the hero the message was posted with.
+    Original,
+}
+
+pub(super) async fn edit_message_with_hero(
+    client: &BuzzClient,
+    event_id: &str,
+    content: &str,
+    clear_attachments: bool,
+    hero: Option<HeroSource<'_>>,
 ) -> Result<(), CliError> {
     validate_hex64(event_id)?;
     validate_content_size(content)?;
@@ -24,6 +42,20 @@ pub(super) async fn edit_message(
         return Err(CliError::Other(
             "relay returned the wrong edit target".into(),
         ));
+    }
+    if hero.is_some() {
+        if original.pubkey != client.public_key() {
+            return Err(CliError::Usage(
+                "only the author of a message can change its hero".into(),
+            ));
+        }
+        // A forum post (45001) can have a message copy, and readers show the copy.
+        if original.kind.as_u16() != 9 {
+            return Err(CliError::Usage(format!(
+                "--event is kind {}; give the article's kind 9 message",
+                original.kind.as_u16()
+            )));
+        }
     }
     // Keep this boundary aligned with media_reference_query and the relay lookup.
     // Other channel-tagged events retain the historical plain-edit behavior.
@@ -78,7 +110,7 @@ pub(super) async fn edit_message(
             "effective edit response has the wrong replacement".into(),
         ));
     }
-    let media = if clear_attachments {
+    let mut media: Vec<Vec<String>> = if clear_attachments {
         Vec::new()
     } else {
         effective
@@ -89,6 +121,38 @@ pub(super) async fn edit_message(
             .collect()
     };
     let now = Timestamp::now().as_secs();
+    let replacement;
+    let content = if let Some(source) = hero {
+        let at = media
+            .iter()
+            .position(|tag| hero_url(tag).is_some())
+            .ok_or_else(|| CliError::Usage("this message has no image to replace".into()))?;
+        let old = hero_url(&media[at]).unwrap_or_default().to_owned();
+        let tag = match source {
+            HeroSource::File(path) => {
+                let desc = client.upload_file(path).await?;
+                if !desc.mime_type.starts_with("image/") {
+                    return Err(CliError::Usage(format!("{path} is not an image")));
+                }
+                crate::client::build_imeta_tag(&desc)
+            }
+            HeroSource::Original => original
+                .tags
+                .iter()
+                .map(|tag| tag.as_slice())
+                .find(|tag| hero_url(tag).is_some())
+                .ok_or_else(|| CliError::Usage("this message was posted without an image".into()))?
+                .to_vec(),
+        };
+        let new = hero_url(&tag)
+            .ok_or_else(|| CliError::Other("the relay returned an unusable image".into()))?;
+        replacement = replace_image(&effective.content, &old, new);
+        validate_content_size(&replacement)?;
+        media[at] = tag;
+        replacement.as_str()
+    } else {
+        content
+    };
     // Make successive edits effective even when issued in the same second.
     // Refuse an unexpectedly future timeline instead of extending it forever.
     let head = effective.created_at.as_secs();
@@ -105,6 +169,39 @@ pub(super) async fn edit_message(
     let resp = client.submit_event(event).await?;
     println!("{}", crate::client::normalize_write_response(&resp));
     Ok(())
+}
+
+/// Point every Markdown image that shows `old` at `new`; links and prose stay.
+fn replace_image(content: &str, old: &str, new: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(at) = rest.find(old) {
+        let (before, after) = rest.split_at(at);
+        let after = &after[old.len()..];
+        out.push_str(before);
+        let line = out.rsplit('\n').next().unwrap_or_default();
+        let open = line.strip_suffix('<').unwrap_or(line);
+        let image = open
+            .strip_suffix("](")
+            .is_some_and(|alt| alt.rfind("![").is_some_and(|i| !alt[i..].contains("](")))
+            && after.starts_with([')', '>', ' ']);
+        out.push_str(if image { new } else { old });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The address of an image attachment; `None` for any other tag.
+fn hero_url(tag: &[String]) -> Option<&str> {
+    if tag.first().map(String::as_str) != Some("imeta")
+        || !tag.iter().any(|part| part.starts_with("m image/"))
+    {
+        return None;
+    }
+    tag.iter()
+        .find_map(|part| part.strip_prefix("url "))
+        .filter(|url| !url.is_empty())
 }
 
 fn latest_edit<'a>(original: &'a Event, edits: &'a [Event]) -> &'a Event {
