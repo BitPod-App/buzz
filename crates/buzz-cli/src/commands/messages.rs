@@ -1044,7 +1044,16 @@ pub async fn dispatch(
             event,
             content,
             clear_attachments,
-        } => edit::edit_message(client, &event, &content, clear_attachments).await,
+            replace_hero,
+            restore_hero,
+        } => {
+            let hero = match &replace_hero {
+                Some(path) => Some(edit::HeroSource::File(path)),
+                None => restore_hero.then_some(edit::HeroSource::Original),
+            };
+            let content = content.unwrap_or_default();
+            edit::edit_message_with_hero(client, &event, &content, clear_attachments, hero).await
+        }
         MessagesCmd::Delete {
             event,
             action_id,

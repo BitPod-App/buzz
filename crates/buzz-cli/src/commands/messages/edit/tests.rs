@@ -307,3 +307,90 @@ async fn other_channel_kinds_keep_plain_edits_on_older_relays() {
         }
     }
 }
+
+#[test]
+fn only_images_showing_the_old_hero_change() {
+    let (old, new) = (
+        "https://relay.test/media/old.jpg",
+        "https://relay.test/media/new.jpg",
+    );
+    let body = |hero: &str| {
+        format!(
+            "# Headline\n![First](<{hero}>)\nText ![a [b\\]]({hero} \"t\") [link]({old}) {old}\n\
+             ![x](https://relay.test/media/other.jpg) [y]({old})\n![hero.jpg]({hero})"
+        )
+    };
+    assert_eq!(super::replace_image(&body(old), old, new), body(new));
+    assert_eq!(super::replace_image("No image", old, new), "No image");
+    let thumb = format!("![a]({old}.thumb)");
+    assert_eq!(super::replace_image(&thumb, old, new), thumb);
+}
+
+#[tokio::test]
+async fn restoring_the_hero_is_one_edit_that_keeps_text_and_other_attachments() {
+    let keys = Keys::generate();
+    let channel = Uuid::new_v4();
+    let original = message(&keys, channel, &[imeta("old"), imeta("other")]);
+    let current = buzz_sdk::build_edit_with_media(
+        channel,
+        original.id,
+        "# Title\n![Alt](<https://example.com/new>)\nFresh prose.\n![hero.jpg](https://example.com/new)",
+        &[imeta("new"), imeta("other")],
+    )
+    .unwrap()
+    .sign_with_keys(&keys)
+    .unwrap();
+    let (url, state) = relay(vec![original.clone(), current], false).await;
+    edit_message_with_hero(
+        &client(url, keys),
+        &original.id.to_hex(),
+        "",
+        false,
+        Some(HeroSource::Original),
+    )
+    .await
+    .unwrap();
+    let submitted = state.submitted.lock().unwrap();
+    assert_eq!(submitted.len(), 1);
+    let restored = &submitted[0];
+    assert_eq!(
+        restored.content,
+        "# Title\n![Alt](<https://example.com/old>)\nFresh prose.\n![hero.jpg](https://example.com/old)"
+    );
+    assert_eq!(latest_edit(&original, &submitted).id, restored.id);
+    let attachments: Vec<_> = restored
+        .tags
+        .iter()
+        .filter(|t| t.as_slice()[0] == "imeta")
+        .map(|t| t.as_slice().to_vec())
+        .collect();
+    assert_eq!(attachments, vec![imeta("old"), imeta("other")]);
+}
+
+#[tokio::test]
+async fn hero_changes_refuse_other_authors_forum_posts_and_imageless_messages() {
+    let keys = Keys::generate();
+    let channel = Uuid::new_v4();
+    let post = EventBuilder::new(Kind::Custom(45001), "post")
+        .tags([
+            Tag::parse(["h", &channel.to_string()]).unwrap(),
+            Tag::parse(imeta("old")).unwrap(),
+        ])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let other = message(&Keys::generate(), channel, &[imeta("old")]);
+    let bare = message(&keys, channel, &[]);
+    for event in [post, other, bare] {
+        let (url, state) = relay(vec![event.clone()], false).await;
+        let result = edit_message_with_hero(
+            &client(url, keys.clone()),
+            &event.id.to_hex(),
+            "",
+            false,
+            Some(HeroSource::Original),
+        )
+        .await;
+        assert!(matches!(result, Err(CliError::Usage(_))));
+        assert!(state.submitted.lock().unwrap().is_empty());
+    }
+}

@@ -698,8 +698,14 @@ pub enum MessagesCmd {
         #[arg(long)]
         event: String,
         /// New message content
-        #[arg(long)]
-        content: String,
+        #[arg(long, required_unless_present_any = ["replace_hero", "restore_hero"])]
+        content: Option<String>,
+        /// Image file to show instead of the article's first image; its text and replies stay
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["content", "restore_hero", "clear_attachments"])]
+        replace_hero: Option<String>,
+        /// Put back the first image the article was posted with
+        #[arg(long, conflicts_with_all = ["content", "clear_attachments"])]
+        restore_hero: bool,
         /// Remove all attachments on kinds 9/40002/40008/45001/45003 (later edits keep them removed)
         #[arg(long)]
         clear_attachments: bool,
